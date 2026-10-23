@@ -1,6 +1,6 @@
 import { Document, NodeIO } from "@gltf-transform/core";
 import sharp from "sharp";
-import type { FaceName } from "./detect";
+export type FaceName = "front" | "right" | "back" | "left" | "top" | "bottom";
 
 export interface BoxSize {
   width: number;

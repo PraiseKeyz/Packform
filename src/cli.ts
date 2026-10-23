@@ -2,12 +2,20 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
-import { dielineToGlb } from "./index";
+import { dielineToGlb, type ContainerShape, type DielineKind, type DielineLayout } from "./index";
+
+const KINDS: DielineKind[] = ["carton", "label", "cone-label", "blister", "sachet", "pouch"];
+const SHAPES: ContainerShape[] = ["bottle", "amber", "jar", "can", "tube"];
 
 const HELP = `
 packform: give packaging its form. Turns a packaging dieline (.ai / .pdf) into a textured 3D model (.glb)
 
-Cartons become a folded box; flat labels become a bottle with the label wrapped around it.
+  cartons      fold up from their panels (tuck-end, crash-lock, trays, mailers, sleeves…) with a fold animation
+  labels       wrap a bottle, amber pharmacy bottle, jar, can or squeeze tube
+  cone labels  wrap a tapered cup or tub
+  blisters     card or foil with clear domes and tablets
+  sachets      puffed pillow, front and back
+  pouches      stand-up pouch with a bottom gusset
 
 Usage
   packform <dieline.ai|pdf> [options]
@@ -15,29 +23,49 @@ Usage
 Options
   -o, --out <file>        Output .glb (default: next to the input, same name)
       --art <file>        Artwork (PDF or image) on the same artboard as the dieline, if it isn't in the dieline file
-      --kind <type>       carton | label (default: auto)
+      --kind <type>       ${KINDS.join(" | ")} (default: auto)
       --dpi <n>           Texture resolution (default: 300)
       --texture <file>    Also save the texture image (JPEG)
       --json              Print what was detected as JSON
-
-Cartons
-      --size <WxHxD>      Box size in mm, e.g. 50x120x50 (default: measured from the dieline)
-      --front <1-4>       Which wall, counting left to right on the flat layout, is the front
       --lines-page <n>    Page number (1-based) with the dieline lines (default: auto)
       --art-page <n>      Page number (1-based) with the artwork (default: auto)
 
-Labels / bottles
-      --diameter <mm>     Bottle diameter (default: label width ÷ π, so the label wraps once around)
-      --height <mm>       Bottle height including the cap (default: 3 × diameter)
-      --cap <#rrggbb>     Cap colour (default: #1f5fbf)
-      --opaque            Make the bottle body opaque instead of clear plastic
+Cartons
+      --fold-angle <deg>  Fold angle for every fold (default: 90)
+      --no-animation      Leave out the fold animation
+
+Labels
+      --shape <name>      ${SHAPES.join(" | ")} (default: bottle)
+      --diameter <mm>     Container diameter (default: label width ÷ π, so the label wraps once around)
+      --height <mm>       Container height including the cap (default depends on the shape)
+      --cap <#rrggbb>     Cap or lid colour
+      --opaque            Make a clear body opaque
 
   -h, --help              Show this help
 
 Examples
-  npx packform medicine_box_50x50x120_mm.ai -o box.glb
-  npx packform bottle-label.pdf --art label-design.png --diameter 65 --height 210
+  npx packform carton.ai -o carton.glb
+  npx packform label.pdf --shape amber --art label-design.png
+  npx packform sachet.pdf --kind sachet
 `;
+
+function summary(layout: DielineLayout): string {
+  switch (layout.kind) {
+    case "carton": {
+      const { width, height, depth } = layout.size;
+      return `carton ${width} × ${height} × ${depth} mm · ${layout.panels.length} panels · folds in ${layout.duration} steps`;
+    }
+    case "label":
+      return `label ${layout.size.width} × ${layout.size.height} mm`;
+    case "cone-label":
+      return `cone label, arcs ${layout.size.outer} / ${layout.size.inner} mm, ${layout.size.height} mm tall → cup`;
+    case "blister":
+      return `blister ${layout.size.width} × ${layout.size.height} mm · ${layout.cavities.length} cavities`;
+    case "sachet":
+    case "pouch":
+      return `${layout.kind} ${layout.size.width} × ${layout.size.height} mm${layout.back ? " · front and back" : ""}${layout.gusset ? " · gusset" : ""}`;
+  }
+}
 
 async function main() {
   const { values, positionals } = parseArgs({
@@ -46,11 +74,12 @@ async function main() {
       out: { type: "string", short: "o" },
       art: { type: "string" },
       kind: { type: "string" },
-      size: { type: "string" },
       dpi: { type: "string" },
-      front: { type: "string" },
       "lines-page": { type: "string" },
       "art-page": { type: "string" },
+      "fold-angle": { type: "string" },
+      "no-animation": { type: "boolean" },
+      shape: { type: "string" },
       diameter: { type: "string" },
       height: { type: "string" },
       cap: { type: "string" },
@@ -67,12 +96,6 @@ async function main() {
     process.exit(input || values.help ? 0 : 1);
   }
 
-  let size;
-  if (values.size) {
-    const m = values.size.match(/^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)$/i);
-    if (!m) throw new Error(`--size must look like 50x120x50 (width x height x depth, in mm)`);
-    size = { width: +m[1], height: +m[2], depth: +m[3] };
-  }
   const int = (v: string | undefined, name: string) => {
     if (v === undefined) return undefined;
     const n = Number(v);
@@ -85,19 +108,21 @@ async function main() {
     if (!(n > 0)) throw new Error(`${name} must be a positive number`);
     return n;
   };
-  if (values.kind && values.kind !== "carton" && values.kind !== "label") throw new Error(`--kind must be carton or label`);
+  if (values.kind && !KINDS.includes(values.kind as DielineKind)) throw new Error(`--kind must be one of: ${KINDS.join(", ")}`);
+  if (values.shape && !SHAPES.includes(values.shape as ContainerShape)) throw new Error(`--shape must be one of: ${SHAPES.join(", ")}`);
   if (values.cap && !/^#?[0-9a-f]{6}$/i.test(values.cap)) throw new Error(`--cap must be a colour like #1f5fbf`);
 
   const out = values.out ?? path.join(path.dirname(input), path.basename(input, path.extname(input)) + ".glb");
   const result = await dielineToGlb(input, {
-    kind: values.kind as "carton" | "label" | undefined,
+    kind: values.kind as DielineKind | undefined,
     art: values.art,
-    size,
     dpi: int(values.dpi, "--dpi"),
-    front: int(values.front, "--front"),
     linesPage: values["lines-page"] ? int(values["lines-page"], "--lines-page")! - 1 : undefined,
     artPage: values["art-page"] ? int(values["art-page"], "--art-page")! - 1 : undefined,
-    bottle: {
+    foldAngle: num(values["fold-angle"], "--fold-angle"),
+    carton: { animation: !values["no-animation"] },
+    container: {
+      shape: values.shape as ContainerShape | undefined,
       diameter: num(values.diameter, "--diameter"),
       height: num(values.height, "--height"),
       capColor: values.cap ? "#" + values.cap.replace("#", "") : undefined,
@@ -111,14 +136,10 @@ async function main() {
   const { layout } = result;
   const artFrom = result.artPage < 0 ? "--art file" : `page ${result.artPage + 1}`;
   if (values.json) {
-    console.log(JSON.stringify({ output: out, artPage: result.artPage + 1 || null, ...layout, linesPage: layout.linesPage + 1 }, null, 2));
-  } else if (layout.kind === "carton") {
-    const { width, height, depth } = layout.size;
-    console.log(`✔ ${out} (${(result.glb.byteLength / 1024).toFixed(0)} KB)`);
-    console.log(`  carton ${width} × ${height} × ${depth} mm · lines from page ${layout.linesPage + 1} · artwork from ${artFrom}`);
+    console.log(JSON.stringify({ output: out, artPage: result.artPage < 0 ? null : result.artPage + 1, ...layout, linesPage: layout.linesPage + 1 }, null, 2));
   } else {
     console.log(`✔ ${out} (${(result.glb.byteLength / 1024).toFixed(0)} KB)`);
-    console.log(`  label ${layout.size.width} × ${layout.size.height} mm → bottle · lines from page ${layout.linesPage + 1} · artwork from ${artFrom}`);
+    console.log(`  ${summary(layout)} · lines from page ${layout.linesPage + 1} · artwork from ${artFrom}`);
   }
 }
 

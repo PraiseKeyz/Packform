@@ -17,6 +17,10 @@ export interface Segment {
   /** Stroke width in points. */
   width: number;
   dashed: boolean;
+  /** Part of a flattened curve (arc, rounded corner) rather than a straight line in the file. */
+  curved: boolean;
+  /** Which drawn path this came from: segments with the same id were drawn together. */
+  path: number;
 }
 
 export interface PageInfo {
@@ -38,6 +42,7 @@ const LINE_TO = 1;
 const CURVE_TO = 2;
 const QUAD_TO = 3;
 const CLOSE = 4;
+const CURVE_STEPS = 8;
 
 const STROKE_OPS = new Set<number>([
   OPS.stroke,
@@ -100,6 +105,7 @@ export async function readPage(page: PDFPageProxy): Promise<PageInfo> {
   const stack: State[] = [];
   const segments: Segment[] = [];
   let artOps = 0;
+  let pathId = 0;
 
   // PDF space has y pointing up; flip so y grows downwards like an image
   const toTopLeft = (x: number, y: number): [number, number] => {
@@ -149,13 +155,33 @@ export async function readPage(page: PDFPageProxy): Promise<PageInfo> {
         const [paintOp, [data]] = args as [number, [ArrayLike<number> | null]];
         if (FILL_OPS.has(paintOp)) artOps++;
         if (!STROKE_OPS.has(paintOp) || !data) break;
-        const style = { color: state.stroke, width: state.lineWidth * scaleOf(state.ctm), dashed: state.dashed };
+        const style = { color: state.stroke, width: state.lineWidth * scaleOf(state.ctm), dashed: state.dashed, path: pathId++ };
         let cur: [number, number] = [0, 0];
         let start: [number, number] = [0, 0];
-        const add = (a: [number, number], b: [number, number]) => {
+        const add = (a: [number, number], b: [number, number], curved = false) => {
           const [x1, y1] = toTopLeft(...a);
           const [x2, y2] = toTopLeft(...b);
-          segments.push({ x1, y1, x2, y2, ...style });
+          segments.push({ x1, y1, x2, y2, ...style, curved });
+        };
+        // Curves become short straight pieces so round shapes (tucks, circles, arcs) can be measured
+        const addCurve = (pts: [number, number][]) => {
+          const n = CURVE_STEPS;
+          let prev = pts[0];
+          for (let k = 1; k <= n; k++) {
+            const t = k / n, u = 1 - t;
+            const p: [number, number] =
+              pts.length === 4
+                ? [
+                    u * u * u * pts[0][0] + 3 * u * u * t * pts[1][0] + 3 * u * t * t * pts[2][0] + t * t * t * pts[3][0],
+                    u * u * u * pts[0][1] + 3 * u * u * t * pts[1][1] + 3 * u * t * t * pts[2][1] + t * t * t * pts[3][1],
+                  ]
+                : [
+                    u * u * pts[0][0] + 2 * u * t * pts[1][0] + t * t * pts[2][0],
+                    u * u * pts[0][1] + 2 * u * t * pts[1][1] + t * t * pts[2][1],
+                  ];
+            add(prev, p, true);
+            prev = p;
+          }
         };
         for (let j = 0; j < data.length; ) {
           const op = data[j++];
@@ -168,10 +194,14 @@ export async function readPage(page: PDFPageProxy): Promise<PageInfo> {
             cur = next;
             j += 2;
           } else if (op === CURVE_TO) {
-            cur = [data[j + 4], data[j + 5]];
+            const end: [number, number] = [data[j + 4], data[j + 5]];
+            addCurve([cur, [data[j], data[j + 1]], [data[j + 2], data[j + 3]], end]);
+            cur = end;
             j += 6;
           } else if (op === QUAD_TO) {
-            cur = [data[j + 2], data[j + 3]];
+            const end: [number, number] = [data[j + 2], data[j + 3]];
+            addCurve([cur, [data[j], data[j + 1]], end]);
+            cur = end;
             j += 4;
           } else if (op === CLOSE) {
             add(cur, start);

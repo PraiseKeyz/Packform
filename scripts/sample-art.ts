@@ -6,7 +6,8 @@
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { createCanvas, type SKRSContext2D } from "@napi-rs/canvas";
-import { choosePages, detectDieline, dielineToGlb, openPdf, readPage, type FaceName, type Rect } from "../src/index";
+import { choosePages, detectDieline, dielineToGlb, openPdf, panelMatrices, readPage, type FaceName, type Rect } from "../src/index";
+import { applyDir } from "../src/math";
 
 const S = 4; // pixels per PDF point (288 dpi)
 const dir = new URL("../samples/", import.meta.url).pathname;
@@ -42,7 +43,7 @@ function text(ctx: SKRSContext2D, s: string, x: number, y: number, size: number,
 }
 
 async function carton() {
-  const file = dir + "templatemaker-cardbox-50x50x120.pdf";
+  const file = dir + "cardbox-50x50x120.pdf";
   const { page, layout } = await layoutOf(file);
   if (layout.kind !== "carton") throw new Error("expected a carton");
   const canvas = createCanvas(Math.round(page.width * S), Math.round(page.height * S));
@@ -101,17 +102,33 @@ async function carton() {
       text(ctx, "0 12345 67890 5", w / 2, h * 0.8, w * 0.08, "#222", "normal");
     },
   };
-  for (const [name, face] of Object.entries(layout.faces) as [FaceName, { rect: Rect; rotate: number }][]) {
-    panel(ctx, face.rect, face.rotate, (w, h) => painters[name](w, h));
+  // Which panel ends up as which face, and how to turn the artwork so it reads correctly once folded
+  const m = panelMatrices(layout);
+  const faceOf = (n: number[]): FaceName => {
+    const k = [0, 1, 2].reduce((a, b) => (Math.abs(n[b]) > Math.abs(n[a]) ? b : a));
+    return ([["left", "right"], ["bottom", "top"], ["back", "front"]] as const)[k][n[k] > 0 ? 1 : 0];
+  };
+  const up: Record<FaceName, number[]> = { front: [0, 1, 0], back: [0, 1, 0], left: [0, 1, 0], right: [0, 1, 0], top: [0, 0, -1], bottom: [0, 0, 1] };
+  const best = new Map<FaceName, number>();
+  layout.panels.forEach((p, i) => {
+    const f = faceOf(applyDir(m[i], [0, 0, 1]));
+    if (!best.has(f) || layout.panels[best.get(f)!].area < p.area) best.set(f, i);
+  });
+  for (const [name, i] of best) {
+    const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const pageUp = applyDir(m[i], [0, 1, 0]), pageRight = applyDir(m[i], [1, 0, 0]);
+    const want = up[name];
+    const rotate = dot(pageUp, want) > 0.5 ? 0 : dot(pageUp, want) < -0.5 ? 180 : dot(pageRight, want) > 0.5 ? 270 : 90;
+    panel(ctx, layout.panels[i].bbox, rotate, (w, h) => painters[name](w, h));
   }
-  const art = dir + "templatemaker-cardbox-art.png";
+  const art = dir + "cardbox-art.png";
   writeFileSync(art, canvas.toBuffer("image/png"));
   const { glb } = await dielineToGlb(file, { art });
-  writeFileSync(dir + "templatemaker-cardbox.glb", glb);
+  writeFileSync(dir + "cardbox.glb", glb);
 }
 
 async function label() {
-  const file = dir + "bottle-label-12oz-2x7.pdf";
+  const file = dir + "bottle-label-12oz.pdf";
   const { page, layout } = await layoutOf(file);
   if (layout.kind !== "label") throw new Error("expected a label");
   const canvas = createCanvas(Math.round(page.width * S), Math.round(page.height * S));
@@ -140,7 +157,7 @@ async function label() {
   });
   const art = dir + "bottle-label-art.png";
   writeFileSync(art, canvas.toBuffer("image/png"));
-  const { glb } = await dielineToGlb(file, { art, bottle: { height: 190, capColor: "#0277bd" } });
+  const { glb } = await dielineToGlb(file, { art, container: { height: 190, capColor: "#0277bd" } });
   writeFileSync(dir + "bottle-label.glb", glb);
 }
 

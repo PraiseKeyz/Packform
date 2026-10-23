@@ -1,47 +1,54 @@
 import { readFile } from "node:fs/promises";
 import sharp from "sharp";
-import { buildBottleGlb, type BottleOptions } from "./bottle";
-import { choosePages, detectDieline, type DetectOptions, type DielineLayout, type FaceName } from "./detect";
-import { buildBoxGlb, type BoxSize } from "./glb";
+import { choosePages, detectDieline, type DetectOptions, type DielineLayout } from "./detect";
+import { buildBlisterGlb, buildPillowGlb } from "./flat";
+import { buildCartonGlb, type CartonGlbOptions } from "./fold";
 import { openPdf, readPage, renderRegion, type PageInfo, type Rect } from "./pdf";
+import { buildContainerGlb, buildCupGlb, type ContainerOptions } from "./shapes";
 
-export { detectBox, detectLabel, detectDieline, choosePages, lineStyles } from "./detect";
-export type { BoxLayout, LabelLayout, DielineLayout, DetectOptions, FaceLayout, FaceName, LineStyle, Rotation } from "./detect";
+export { detectDieline, detectLabel, detectConeLabel, detectBlister, detectPillow, choosePages } from "./detect";
+export type { DielineLayout, DielineKind, DetectOptions, LabelLayout, ConeLabelLayout } from "./detect";
+export { detectCarton, buildCartonGlb, panelMatrices, panelPoint, panelNormal } from "./fold";
+export type { CartonLayout, CartonOptions, CartonGlbOptions, FoldedPanel } from "./fold";
+export { analyzePanels } from "./panels";
+export type { Panel, Hinge, PanelAnalysis, Point } from "./panels";
+export { buildContainerGlb, buildCupGlb, lathe } from "./shapes";
+export type { ContainerShape, ContainerOptions, ConeLabel } from "./shapes";
+export { buildBlisterGlb, buildPillowGlb } from "./flat";
+export type { BlisterLayout, PillowLayout } from "./flat";
 export { buildBoxGlb } from "./glb";
-export type { BoxSize, BuildOptions, BuildResult } from "./glb";
-export { buildBottleGlb } from "./bottle";
-export type { BottleOptions } from "./bottle";
+export type { BoxSize, BuildOptions, BuildResult, FaceName } from "./glb";
+export { lineStyles, styleKey, describeStyle } from "./styles";
+export type { LineStyle } from "./styles";
 export { openPdf, readPage, renderRegion } from "./pdf";
 export type { PageInfo, Rect, Segment } from "./pdf";
 
 export interface DielineOptions extends DetectOptions {
-  /** "carton" or "label". Default: worked out from the lines. */
-  kind?: "carton" | "label";
   /**
    * Artwork to use instead of what is printed on the dieline: a PDF (first page) or an image (PNG, JPEG…)
    * laid out on the same artboard as the dieline. File path or bytes.
    */
   art?: string | Uint8Array;
-  /** Texture resolution. Default 300. */
+  /** Texture resolution. Default 300 (lowered automatically so textures stay within 4096 px). */
   dpi?: number;
-  /** Cartons: override the box size in millimetres (otherwise measured from the dieline). */
-  size?: BoxSize;
-  /** Labels: bottle shape. Default: the label wraps once around a bottle 3 × as tall as it is wide. */
-  bottle?: Omit<BottleOptions, "label" | "quality">;
+  /** Labels: container shape and size. Default: a water bottle the label wraps once around. */
+  container?: Omit<ContainerOptions, "label" | "quality">;
+  /** Cartons: board colour, and whether to include the fold animation. */
+  carton?: CartonGlbOptions;
   /** Page (0-based) holding the dieline lines. Default: automatic. */
   linesPage?: number;
   /** Page (0-based) holding the artwork. Default: a page with artwork and the fewest guide lines. */
   artPage?: number;
-  /** JPEG quality of the texture (1-100). Default 90. */
+  /** JPEG quality of textures (1-100). Default 90. */
   quality?: number;
 }
 
 export interface DielineResult {
   /** The 3D model as binary glTF. Write it to a `.glb` file. */
   glb: Uint8Array;
-  /** The texture image (JPEG) baked into the model. */
+  /** The main texture image baked into the model. */
   texture: Buffer;
-  /** What was detected. `layout.kind` says whether it was a carton or a label. */
+  /** What was detected. `layout.kind` says which kind of packaging it is. */
   layout: DielineLayout;
   /** Page (0-based) the artwork came from, or -1 when `art` was supplied. */
   artPage: number;
@@ -49,6 +56,7 @@ export interface DielineResult {
 
 const isPdf = (b: Uint8Array) => b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46; // %PDF
 const load = async (x: string | Uint8Array) => (typeof x === "string" ? new Uint8Array(await readFile(x)) : x);
+const MAX_TEXTURE = 4096;
 
 type Cropper = (rect: Rect, dpi: number) => Promise<Buffer>;
 
@@ -69,16 +77,20 @@ async function artCropper(art: Uint8Array, page: PageInfo): Promise<{ crop: Crop
   return {
     crop: async (r, dpi) => {
       const left = Math.max(0, Math.round(r[0] * sx)), top = Math.max(0, Math.round(r[1] * sy));
-      const width = Math.min(meta.width! - left, Math.round((r[2] - r[0]) * sx));
-      const height = Math.min(meta.height! - top, Math.round((r[3] - r[1]) * sy));
-      const out = { w: Math.round(((r[2] - r[0]) * dpi) / 72), h: Math.round(((r[3] - r[1]) * dpi) / 72) };
+      const width = Math.max(1, Math.min(meta.width! - left, Math.round((r[2] - r[0]) * sx)));
+      const height = Math.max(1, Math.min(meta.height! - top, Math.round((r[3] - r[1]) * sy)));
+      const out = { w: Math.max(1, Math.round(((r[2] - r[0]) * dpi) / 72)), h: Math.max(1, Math.round(((r[3] - r[1]) * dpi) / 72)) };
       return sharp(art).extract({ left, top, width, height }).resize(out.w, out.h, { fit: "fill" }).png().toBuffer();
     },
     close: async () => {},
   };
 }
 
-/** Convert a dieline (.ai or .pdf: a file path or the file's bytes) into a 3D model: a box for cartons, a bottle for labels. */
+/**
+ * Convert a dieline (.ai or .pdf: a file path or the file's bytes) into a 3D model.
+ * Cartons fold up (with a fold animation), labels wrap a container, cone labels wrap a cup,
+ * and blister packs, sachets and pouches are built flat-and-puffed.
+ */
 export async function dielineToGlb(input: string | Uint8Array, options: DielineOptions = {}): Promise<DielineResult> {
   const doc = await openPdf(await load(input));
   const closers: (() => Promise<void>)[] = [() => doc.destroy()];
@@ -90,7 +102,8 @@ export async function dielineToGlb(input: string | Uint8Array, options: DielineO
     const linesPage = options.linesPage !== undefined ? pages[options.linesPage] : auto.lines;
     if (!linesPage) throw new Error(`Page ${options.linesPage! + 1} does not exist (the file has ${pages.length}).`);
     const layout = detectDieline(linesPage, options);
-    const dpi = options.dpi ?? 300;
+    const wantDpi = options.dpi ?? 300;
+    const q = options.quality;
 
     let crop: Cropper;
     let artIndex = -1;
@@ -103,21 +116,41 @@ export async function dielineToGlb(input: string | Uint8Array, options: DielineO
       const artPage = await doc.getPage(artIndex + 1);
       crop = (rect, d) => renderRegion(artPage, rect, d);
     }
+    // Keep every texture within what browsers and phones can load
+    const render = (r: Rect) => crop(r, Math.min(wantDpi, (MAX_TEXTURE * 72) / Math.max(r[2] - r[0], r[3] - r[1])));
 
-    if (layout.kind === "label") {
-      const image = await crop(layout.trim, dpi);
-      const { glb, texture } = await buildBottleGlb(image, { ...options.bottle, label: layout.size, quality: options.quality });
-      return { glb, texture, layout, artPage: artIndex };
+    const done = (glb: Uint8Array, texture: Buffer): DielineResult => ({ glb, texture, layout, artPage: artIndex });
+    switch (layout.kind) {
+      case "carton": {
+        const [x0, y0, x1, y1] = layout.bbox;
+        const png = await render([x0, y0, x1, y1]);
+        const texture = await sharp(png).jpeg({ quality: q ?? 90 }).toBuffer();
+        return done(await buildCartonGlb(layout, texture, "image/jpeg", options.carton), texture);
+      }
+      case "label": {
+        const r = await buildContainerGlb(await render(layout.trim), { ...options.container, label: layout.size, quality: q });
+        return done(r.glb, r.texture);
+      }
+      case "cone-label": {
+        const r = await buildCupGlb(await render(layout.bbox), layout, { quality: q });
+        return done(r.glb, r.texture);
+      }
+      case "blister": {
+        const r = await buildBlisterGlb(await render(layout.cardBox), layout, { quality: q });
+        return done(r.glb, r.texture);
+      }
+      case "sachet":
+      case "pouch": {
+        const images = {
+          front: await render(layout.front),
+          back: layout.back ? await render(layout.back) : undefined,
+          gusset: layout.gusset ? await render(layout.gusset) : undefined,
+        };
+        const r = await buildPillowGlb(images, layout, { quality: q });
+        return done(r.glb, r.texture);
+      }
     }
-
-    const size = options.size ?? layout.size;
-    const faces = {} as Record<FaceName, Buffer>;
-    for (const [name, face] of Object.entries(layout.faces) as [FaceName, (typeof layout.faces)[FaceName]][]) {
-      const png = await crop(face.rect, dpi);
-      faces[name] = face.rotate ? await sharp(png).rotate(face.rotate).toBuffer() : png;
-    }
-    const { glb, atlas } = await buildBoxGlb(faces, size, { pxPerMm: dpi / 25.4, quality: options.quality });
-    return { glb, texture: atlas, layout: { ...layout, size }, artPage: artIndex };
+    throw new Error(`Unsupported dieline kind: ${(layout as { kind: string }).kind}`);
   } finally {
     for (const close of closers.reverse()) await close();
   }
