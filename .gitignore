@@ -1,0 +1,7 @@
+node_modules
+dist
+*.glb
+*.atlas.*
+.DS_Store
+.claude
+samples/
