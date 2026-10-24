@@ -1,7 +1,7 @@
 {
   "name": "packform",
-  "version": "0.1.0",
-  "description": "Turn packaging dielines (.ai / .pdf) into true-size, textured 3D models (.glb): cartons that fold themselves up, bottles, jars, cans, cups, blister packs, sachets and pouches. CLI, Node.js API and React viewer.",
+  "version": "0.1.2",
+  "description": "Dieline (PDF/AI) → true-scale, textured glTF 2.0. Folds cartons from their panel graph with a baked fold animation; also labels, cone labels, blisters, sachets and pouches. CLI, typed Node API, React Three Fiber viewer.",
   "keywords": [
     "dieline",
     "packaging",
@@ -28,9 +28,17 @@
   ],
   "author": "Praise Adebayo",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PraiseKeyz/Packform.git"
+  },
+  "homepage": "https://github.com/PraiseKeyz/Packform#readme",
+  "bugs": {
+    "url": "https://github.com/PraiseKeyz/Packform/issues"
+  },
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "bin": {
     "packform": "dist/cli.js"
@@ -48,7 +56,8 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsup",
