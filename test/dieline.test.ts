@@ -219,6 +219,15 @@ describe("cone label → cup", async () => {
     expect(bottom.r * 2000).toBeCloseTo(S.cup.bottom, -0.5);
     expect((top.y - bottom.y) * 1000).toBeCloseTo(S.cup.height, -0.5);
   });
+
+  it("finds the trim when the bleed is drawn in the same style as the cut", async () => {
+    const { layout } = await dielineToGlb(fixture("cup-label-one-style.pdf"), { dpi: 36 });
+    expect(layout.kind).toBe("cone-label");
+    if (layout.kind !== "cone-label") return;
+    expect(layout.size.outer).toBeCloseTo(Math.PI * S.cup.top, -0.5);
+    expect(layout.size.inner).toBeCloseTo(Math.PI * S.cup.bottom, -0.5);
+    expect(layout.size.height).toBeCloseTo(Math.hypot(S.cup.height, (S.cup.top - S.cup.bottom) / 2), -0.5); // slant height
+  });
 });
 
 describe("blister pack", async () => {

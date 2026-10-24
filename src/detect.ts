@@ -173,7 +173,7 @@ export function detectConeLabel(page: PageInfo): ConeLabelLayout {
       Object.assign(m, c, { pts: all, a0: ref + Math.min(...rel), a1: ref + Math.max(...rel) });
     } else merged.push({ ...a });
   }
-  // Pairs of concentric arcs in the same line style = a sector; the widest is usually the bleed, the next one the trim
+  // Pairs of concentric arcs in the same line style = a sector; the widest is usually the bleed
   const sectors: { cx: number; cy: number; r1: number; r2: number; a0: number; a1: number }[] = [];
   for (let i = 0; i < merged.length; i++)
     for (let j = 0; j < merged.length; j++) {
@@ -186,7 +186,11 @@ export function detectConeLabel(page: PageInfo): ConeLabelLayout {
     }
   if (!sectors.length) throw new Error("No curved (cone) label found.");
   sectors.sort((p, q) => q.r2 - q.r1 - (p.r2 - p.r1));
-  const s = sectors.length >= 2 ? sectors[1] : sectors[0];
+  // The trim is the widest sector sharing neither arc with the bleed. When cut and bleed are drawn in one style,
+  // the pairs mixing a bleed arc with a cut arc are sectors too, and must not be taken for the trim.
+  const [bleed] = sectors;
+  const sameArc = (a: number, b: number) => Math.abs(a - b) < 2;
+  const s = sectors.find((c) => !sameArc(c.r1, bleed.r1) && !sameArc(c.r2, bleed.r2)) ?? bleed;
   // Page area the sector covers
   const pts: Point[] = [];
   for (let k = 0; k <= 32; k++) {
@@ -275,7 +279,7 @@ export function detectDieline(page: PageInfo, options: DetectOptions = {}): Diel
   };
   const analysis = analyzePanels(page);
   return (
-    attempt("carton", () => detectCarton(page, options)) ??
+    attempt("carton", () => detectCarton(page, options, analysis)) ??
     attempt("cone label", () => detectConeLabel(page)) ??
     attempt("blister", () => detectBlister(page, analysis)) ??
     attempt("pouch/sachet", () => detectPillow(page, undefined, analysis)) ??
