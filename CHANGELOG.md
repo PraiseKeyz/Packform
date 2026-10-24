@@ -2,6 +2,19 @@
 
 All notable changes to packform. This project follows [Semantic Versioning](https://semver.org).
 
+## 0.2.0
+
+### Added
+- **Project workflow for frontend apps.**
+  - `packform init` detects the framework's public folder (`public/`, or `static/` for SvelteKit and Gatsby), creates `dielines/` and
+    `<public>/packform/`, git-ignores `dielines/`, writes `packform.config.json` and adds a `packform` npm script. Idempotent.
+  - `packform build` converts every dieline in `dielines/` into `<public>/packform/<name>.glb` and writes `manifest.json`. It's
+    incremental (content hash of dieline + artwork + options), removes outputs whose dieline was deleted, and keeps going past failures.
+  - `packform watch` rebuilds on changes in `dielines/` or the config, and waits for files to finish copying.
+  - Separate artwork by convention: `<name>.art.png` / `.jpg` / `.webp` / `.pdf` next to the dieline.
+  - Per-file options and defaults in `packform.config.json`.
+- Programmatic API for the above: `initProject`, `buildProject`, `watchProject`, `detectFramework`, `loadConfig`, `modelName`, `artFor`.
+
 ## 0.1.2
 
 ### Fixed

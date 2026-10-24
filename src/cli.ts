@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import { existsSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { dielineToGlb, type ContainerShape, type DielineKind, type DielineLayout } from "./index";
+import { CONFIG_FILE, buildProject, initProject, watchProject } from "./project";
 
 const KINDS: DielineKind[] = ["carton", "label", "cone-label", "blister", "sachet", "pouch"];
 const SHAPES: ContainerShape[] = ["bottle", "amber", "jar", "can", "tube"];
@@ -17,7 +19,16 @@ packform: give packaging its form. Turns a packaging dieline (.ai / .pdf) into a
   sachets      puffed pillow, front and back
   pouches      stand-up pouch with a bottom gusset
 
-Usage
+Project workflow (frontend apps)
+  packform init           Create dielines/ and <public>/packform/, ignore dielines/ in git,
+                          write ${CONFIG_FILE} and add a "packform" npm script
+  packform build          Convert every dieline in dielines/ to <public>/packform/<name>.glb + manifest.json
+                          (unchanged files are skipped; --force rebuilds all)
+  packform watch          Build, then rebuild whenever a file in dielines/ or the config changes
+
+  Put separate artwork next to its dieline as <name>.art.png (or .jpg, .webp, .pdf).
+
+Single file
   packform <dieline.ai|pdf> [options]
 
 Options
@@ -143,7 +154,36 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+async function project(command: "init" | "build" | "watch", argv: string[]) {
+  const { values } = parseArgs({ args: argv, options: { force: { type: "boolean" }, help: { type: "boolean", short: "h" } } });
+  if (values.help) return console.log(HELP);
+  const root = process.cwd();
+  if (command === "init") {
+    const { framework, config, changes } = await initProject(root);
+    console.log(`${framework.name === "unknown" ? "No framework detected" : framework.name} · dielines in ${config.input}/ → models in ${config.output}/`);
+    for (const c of changes) console.log(`  ✔ ${c}`);
+    if (!changes.length) console.log("  already set up, nothing changed");
+    console.log(`\nNext: put your .ai / .pdf files in ${config.input}/ and run \`npm run packform\` (or \`npx packform watch\`).`);
+    return;
+  }
+  if (command === "build") {
+    const r = await buildProject(root, { force: values.force, log: (l) => console.log(l) });
+    const n = Object.keys(r.manifest.models).length;
+    console.log(`${n} model${n === 1 ? "" : "s"} · ${r.built.length} built, ${r.skipped.length} unchanged, ${r.removed.length} removed${r.failed.length ? `, ${r.failed.length} failed` : ""}`);
+    if (r.failed.length) process.exitCode = 1;
+    return;
+  }
+  const watcher = await watchProject(root, { log: (l) => console.log(l) });
+  process.on("SIGINT", () => {
+    watcher.close();
+    process.exit(0);
+  });
+}
+
+const [first, ...rest] = process.argv.slice(2);
+const run = (first === "init" || first === "build" || first === "watch") && !existsSync(first) ? project(first, rest) : main();
+
+run.catch((err) => {
   console.error(`✖ ${err instanceof Error ? err.message : err}`);
   process.exit(1);
 });

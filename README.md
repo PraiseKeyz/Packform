@@ -14,7 +14,15 @@ keyframed `fold` animation. CLI, typed Node API, and a React Three Fiber viewer.
 
 ```bash
 npm i packform
+npx packform init        # dielines/ (git-ignored) → public/packform/, config, npm script
+npx packform watch       # drop .ai / .pdf files into dielines/, get public/packform/<name>.glb
 ```
+
+```tsx
+<BoxViewer src="/packform/carton.glb" foldControls />   // from "packform/react"
+```
+
+Or programmatically:
 
 ```ts
 import { writeFile } from "node:fs/promises";
@@ -35,6 +43,7 @@ layout.size; // { width: 50, height: 120, depth: 50 }  (mm)
 
 ---
 
+- [Project workflow](#project-workflow)
 - [Supported inputs](#supported-inputs)
 - [CLI](#cli)
 - [API](#api)
@@ -46,6 +55,79 @@ layout.size; // { width: 50, height: 120, depth: 50 }  (mm)
 - [Troubleshooting](#troubleshooting)
 - [Roadmap](#roadmap)
 - [Contributing](#contributing)
+
+## Project workflow
+
+For frontend apps, packform manages a source folder and an output folder inside your static files:
+
+```
+dielines/                       ← your .ai / .pdf sources (git-ignored, never served)
+  carton.ai
+  carton.art.png                ← optional separate artwork for carton.ai
+  water-label.pdf
+public/packform/                ← generated, committed, served at /packform/*
+  carton.glb
+  water-label.glb
+  manifest.json
+packform.config.json
+```
+
+| Command | |
+|---|---|
+| `packform init` | Detects the framework's public folder, creates `dielines/` and `<public>/packform/`, appends `/dielines/` to `.gitignore`, writes `packform.config.json`, adds `"packform": "packform build"` to `package.json`. Idempotent; never overwrites. |
+| `packform build [--force]` | Converts every dieline in `dielines/` to `<public>/packform/<name>.glb` and writes `manifest.json`. Incremental: skips files whose dieline, artwork and options hash is unchanged. Removes outputs whose dieline was deleted (only files it created). Exits `1` if any file fails; the rest still build. |
+| `packform watch` | `build`, then rebuilds on any change in `dielines/` or `packform.config.json`. Waits for files to finish copying before reading them. |
+
+**Public folder by framework**
+
+| Framework | Output |
+|---|---|
+| Next.js, Vite, Remix, Nuxt, Astro, Angular, Create React App | `public/packform/` |
+| SvelteKit, Gatsby | `static/packform/` |
+| Other | `public/packform/` (change `output` in the config) |
+
+**Conventions**
+
+- Model name = dieline file name, made URL-safe: `Medicine Box 50×50.ai` → `medicine-box-50x50.glb`.
+- Separate artwork: `<name>.art.png` (or `.jpg`, `.jpeg`, `.webp`, `.pdf`) next to `<name>.ai` / `<name>.pdf`.
+- Commit `public/packform/`. The dielines stay on your machine: they're only needed to generate the models.
+- The build cache lives in `dielines/.packform-cache.json` (ignored along with the folder).
+
+**`packform.config.json`**
+
+```jsonc
+{
+  "input": "dielines",
+  "output": "public/packform",
+  "defaults": { "dpi": 300 },                        // applied to every file
+  "files": {                                         // per-file overrides, keyed by file name
+    "water-label.pdf": { "shape": "amber", "diameter": 50, "height": 105 },
+    "sachet.pdf": { "kind": "sachet" }
+  }
+}
+```
+
+Options: `kind`, `dpi`, `quality`, `linesPage`, `artPage` (1-based), `foldAngle`, `animation`, `boardColor`, `shape`, `diameter`,
+`height`, `capColor`, `bodyColor`, `bodyOpacity`.
+
+**`manifest.json`**
+
+```json
+{
+  "generator": "packform@0.2.0",
+  "models": {
+    "carton": { "file": "carton.glb", "url": "/packform/carton.glb", "source": "carton.ai", "art": "carton.art.png",
+                "kind": "carton", "size": { "width": 50, "height": 120, "depth": 50 } }
+  }
+}
+```
+
+Use it to list products without hard-coding paths:
+
+```tsx
+import manifest from "../public/packform/manifest.json";
+Object.entries(manifest.models).map(([name, m]) => <BoxViewer key={name} src={m.url} />);
+```
 
 ## Supported inputs
 
@@ -68,7 +150,8 @@ layout.size; // { width: 50, height: 120, depth: 50 }  (mm)
 ## CLI
 
 ```
-packform <input.pdf|ai> [options]
+packform init | build [--force] | watch      # project workflow (see above)
+packform <input.pdf|ai> [options]            # single file
 ```
 
 | Flag | Type | Default | |
@@ -206,6 +289,7 @@ interface PillowLayout {
 | Detect | `analyzePanels(page) → { panels, hinges, foldStyle }`, `detectDieline`, `detectCarton`, `detectLabel`, `detectConeLabel`, `detectBlister`, `detectPillow`, `choosePages` |
 | Fold | `panelMatrices(layout, progress = 1) → Mat4[]`, `panelPoint(layout, matrices, panel, pt)`, `panelNormal(matrices, panel)`, `foldAngleAt(layout, panel, t)` |
 | Build | `buildCartonGlb`, `buildContainerGlb`, `buildCupGlb`, `buildBlisterGlb`, `buildPillowGlb`, `lathe` |
+| Project | `initProject(root)`, `buildProject(root, { force?, log? }) → BuildReport`, `watchProject(root) → { close, idle }`, `detectFramework(root)`, `loadConfig(root)`, `modelName(file)`, `artFor(file, files)` |
 
 `panelMatrices` evaluates the same motion that is baked into the animation, so you can reproduce any frame of the fold off-line
 (collision checks, custom renderers, server-side thumbnails).
