@@ -153,3 +153,5 @@ export async function dielineToGlb(input: string | Uint8Array, options: DielineO
     for (const close of closers.reverse()) await close();
   }
 }
+export { initProject, buildProject, watchProject, detectFramework, loadConfig, modelName, artFor, CONFIG_FILE } from "./project";
+export type { ProjectConfig, FileOptions, Framework, InitResult, BuildReport, Manifest, ManifestEntry, Watcher } from "./project";

@@ -1,6 +1,6 @@
 {
   "name": "packform",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Dieline (PDF/AI) → true-scale, textured glTF 2.0. Folds cartons from their panel graph with a baked fold animation; also labels, cone labels, blisters, sachets and pouches. CLI, typed Node API, React Three Fiber viewer.",
   "keywords": [
     "dieline",
