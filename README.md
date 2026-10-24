@@ -116,8 +116,10 @@ In Next.js, import it in a client component. The viewer works for every model pa
    or a base with walls on all four sides (trays and mailers, which then lie face down).
 5. **Fold.** Every panel turns 90° about its fold, away from the printed side, as real board does. Smaller panels sit a fraction of a millimetre
    further inside, so dust flaps tuck under lids instead of flickering through them.
-6. **Animate.** The walls fold first, then the flaps, then the lids, then the tucks. That sequence is written into the `.glb` as a
-   standard glTF animation, so any glTF viewer can play it.
+6. **Animate like hands closing a box.** The walls fold first, then the dust flaps (and the rim of a double wall), then the lids.
+   Before each lid moves, its tuck is bent to 90°. As the lid swings shut, the tuck bends a little further, so it points
+   straight down and slides in behind the wall instead of passing through it. The motion is eased and sampled 30 times a second
+   into the `.glb` as a standard glTF animation, so any glTF viewer can play it. `foldAngleAt()` gives any panel's angle at any moment.
 7. **Texture.** The artwork page is rendered once, and every panel keeps its own part of it however it moves. The inside of the board is plain.
 
 ### Everything else

@@ -62,11 +62,3 @@ export const normalize = (v: Vec3): Vec3 => {
   const l = Math.hypot(...v) || 1;
   return [v[0] / l, v[1] / l, v[2] / l];
 };
-
-/** Spherical interpolation from identity to q (t in 0..1). */
-export function slerpFromIdentity(q: Quat, t: number): Quat {
-  const angle = 2 * Math.acos(Math.min(1, Math.max(-1, q[3])));
-  const s = Math.sin(angle / 2);
-  if (s < 1e-9) return IDENTITY_Q;
-  return quatAxisAngle([q[0] / s, q[1] / s, q[2] / s], angle * t);
-}
