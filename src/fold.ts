@@ -2,7 +2,7 @@ import { Document, NodeIO, type Node } from "@gltf-transform/core";
 import earcut from "earcut";
 import { IDENTITY_Q, apply, applyDir, fromTR, mul, normalize, quatAxisAngle, quatMul, rotate, slerpFromIdentity, sub, type Mat4, type Quat, type Vec3 } from "./math";
 import type { PageInfo, Rect } from "./pdf";
-import { analyzePanels, type Hinge, type Panel, type Point } from "./panels";
+import { analyzePanels, type Hinge, type Panel, type PanelAnalysis, type Point } from "./panels";
 import { PT_TO_MM, type LineStyle } from "./styles";
 
 /** A panel placed in the folding tree. */
@@ -61,8 +61,8 @@ function sideOf(p: Panel, h: Hinge): "top" | "bottom" | "left" | "right" | undef
  * other panel 90° away from the printed side about its hinge. Works for any carton built from
  * panels joined by straight folds: tuck-end, crash-lock, trays, mailers, sleeves, lids.
  */
-export function detectCarton(page: PageInfo, options: CartonOptions = {}): CartonLayout {
-  const { panels: all, hinges: allHinges, foldStyle } = analyzePanels(page);
+export function detectCarton(page: PageInfo, options: CartonOptions = {}, analysis: PanelAnalysis = analyzePanels(page)): CartonLayout {
+  const { panels: all, hinges: allHinges, foldStyle } = analysis;
   if (!foldStyle || allHinges.length < 2) throw new Error("No panels joined by fold lines.");
 
   // Maximum spanning tree over the folds (longest hinges first), so every panel hangs from exactly one parent

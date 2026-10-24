@@ -247,8 +247,8 @@ async function label(name: string) {
   await sheet.save(name);
 }
 
-/** A curved cup label: an annular sector, with a bleed sector around it. */
-async function cupLabel(name: string) {
+/** A curved cup label: an annular sector, with a bleed sector around it (drawn in its own style unless given the cut's). */
+async function cupLabel(name: string, bleedStyle: LineStyleSpec = GREEN_BLEED) {
   const { top, bottom, height } = S.cup;
   const Rt = top / 2, Rb = bottom / 2;
   const slant = Math.hypot(height, Rt - Rb);
@@ -268,7 +268,7 @@ async function cupLabel(name: string) {
   const lo = mid - phi / 2 - extra, hi = mid + phi / 2 + extra;
   bands.forEach((col, i) => sheet.svg(sector(r1 - b, r2 + b, lo + ((hi - lo) * i) / 3, lo + ((hi - lo) * (i + 1)) / 3), { fill: col }));
   sheet.svg(sector(r2 - slant * 0.18, r2 + b, lo, hi), { fill: LABEL_COLORS.topStrip });
-  sheet.svg(sector(r1 - b, r2 + b, lo, hi), { stroke: GREEN_BLEED });
+  sheet.svg(sector(r1 - b, r2 + b, lo, hi), { stroke: bleedStyle });
   sheet.svg(sector(r1, r2, mid - phi / 2, mid + phi / 2), { stroke: RED_CUT });
   await sheet.save(name);
 }
@@ -331,6 +331,7 @@ const cl = crashLock();
 await net("crash-lock.pdf", cl.panels, RED_FOLD, DARK_CUT, cl.diagonals);
 await label("bottle-label.pdf");
 await cupLabel("cup-label.pdf");
+await cupLabel("cup-label-one-style.pdf", RED_CUT);
 await blister("blister.pdf");
 await sachet("sachet.pdf");
 await pouch("pouch.pdf");

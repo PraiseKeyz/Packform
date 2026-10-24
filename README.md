@@ -74,7 +74,7 @@ Lower-level pieces are exported too:
 - **Reading:** `openPdf`, `readPage`, `lineStyles`
 - **Detecting:** `analyzePanels` (panels and folds), `detectDieline`, `detectCarton`, `detectLabel`, `detectConeLabel`, `detectBlister`, `detectPillow`
 - **Folding:** `panelMatrices` (every panel's position at any point of the fold), `panelPoint`, `panelNormal`
-- **Building:** `buildCartonGlb`, `buildContainerGlb`, `buildCupGlb`, `buildBlisterGlb`, `buildPillowGlb`, and `buildBoxGlb` (wrap any six images onto a box)
+- **Building:** `buildCartonGlb`, `buildContainerGlb`, `buildCupGlb`, `buildBlisterGlb`, `buildPillowGlb`
 
 ## React viewer
 

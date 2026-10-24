@@ -16,8 +16,6 @@ export { buildContainerGlb, buildCupGlb, lathe } from "./shapes";
 export type { ContainerShape, ContainerOptions, ConeLabel } from "./shapes";
 export { buildBlisterGlb, buildPillowGlb } from "./flat";
 export type { BlisterLayout, PillowLayout } from "./flat";
-export { buildBoxGlb } from "./glb";
-export type { BoxSize, BuildOptions, BuildResult, FaceName } from "./glb";
 export { lineStyles, styleKey, describeStyle } from "./styles";
 export type { LineStyle } from "./styles";
 export { openPdf, readPage, renderRegion } from "./pdf";
