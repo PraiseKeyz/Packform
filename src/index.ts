@@ -8,7 +8,7 @@ import { buildContainerGlb, buildCupGlb, type ContainerOptions } from "./shapes"
 
 export { detectDieline, detectLabel, detectConeLabel, detectBlister, detectPillow, choosePages } from "./detect";
 export type { DielineLayout, DielineKind, DetectOptions, LabelLayout, ConeLabelLayout } from "./detect";
-export { detectCarton, buildCartonGlb, panelMatrices, panelPoint, panelNormal } from "./fold";
+export { detectCarton, buildCartonGlb, panelMatrices, panelPoint, panelNormal, foldAngleAt } from "./fold";
 export type { CartonLayout, CartonOptions, CartonGlbOptions, FoldedPanel } from "./fold";
 export { analyzePanels } from "./panels";
 export type { Panel, Hinge, PanelAnalysis, Point } from "./panels";

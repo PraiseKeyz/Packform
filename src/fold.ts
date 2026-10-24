@@ -1,6 +1,6 @@
 import { Document, NodeIO, type Node } from "@gltf-transform/core";
 import earcut from "earcut";
-import { IDENTITY_Q, apply, applyDir, fromTR, mul, normalize, quatAxisAngle, quatMul, rotate, slerpFromIdentity, sub, type Mat4, type Quat, type Vec3 } from "./math";
+import { IDENTITY_Q, apply, applyDir, fromTR, mul, normalize, quatAxisAngle, quatMul, rotate, sub, type Mat4, type Quat, type Vec3 } from "./math";
 import type { PageInfo, Rect } from "./pdf";
 import { analyzePanels, type Hinge, type Panel, type PanelAnalysis, type Point } from "./panels";
 import { PT_TO_MM, type LineStyle } from "./styles";
@@ -15,6 +15,16 @@ export interface FoldedPanel extends Panel {
   angle: number;
   /** When it folds in the animation: stage n folds between n and n + 1 seconds. */
   stage: number;
+  /**
+   * How it moves in the animation:
+   * - "fold": turns over its whole stage
+   * - "lid": waits while its tuck and flaps are bent, then closes
+   * - "tuck": bent to 90° before its lid moves, then held upright so it slides inside the box as the lid closes
+   * - "lid-flap": a side flap on a lid, bent before the lid moves
+   */
+  motion: "fold" | "lid" | "tuck" | "lid-flap";
+  /** Tucks only: depth of the lid it hangs from and of the tuck itself, in points (to keep it inside the box). */
+  tuck?: { lidDepth: number; depth: number };
 }
 
 export interface CartonLayout {
@@ -39,6 +49,7 @@ export interface CartonOptions {
 }
 
 const M_PER_PT = PT_TO_MM / 1000;
+const FPS = 30;
 /** Flat page point → metres, y up, on the z = 0 plane (the printed side faces +z). */
 const flat = ([x, y]: Point): Vec3 => [x * M_PER_PT, -y * M_PER_PT, 0];
 
@@ -113,7 +124,7 @@ export function detectCarton(page: PageInfo, options: CartonOptions = {}, analys
   const maxHinge = Math.max(...hinges.map((h) => h.length));
   const angle = ((options.foldAngle ?? 90) * Math.PI) / 180;
   const folded = new Map<number, FoldedPanel>();
-  folded.set(root, { ...all[root], parent: -1, angle: 0, stage: 0 });
+  folded.set(root, { ...all[root], parent: -1, angle: 0, stage: 0, motion: "fold" });
   const order = [root];
   for (let k = 0; k < order.length; k++) {
     const p = order[k];
@@ -123,20 +134,50 @@ export function detectCarton(page: PageInfo, options: CartonOptions = {}, analys
       const axis = normalize(sub(flat(hinge.p2), flat(hinge.p1)));
       const c = sub(flat(all[child].centroid), flat(hinge.p1));
       const sign = rotate(quatAxisAngle(axis, angle), c)[2] < 0 ? 1 : -1;
-      folded.set(child, { ...all[child], parent: p, hinge: { p1: hinge.p1, p2: hinge.p2 }, angle: sign * angle, stage: 0 });
+      folded.set(child, { ...all[child], parent: p, hinge: { p1: hinge.p1, p2: hinge.p2 }, angle: sign * angle, stage: 0, motion: "fold" });
       order.push(child);
     }
   }
 
-  // Animation stages: the main walls first, then flaps, then lids, then the tucks on the lids
+  // Animation stages: the main walls first, then the flaps on them, then the lids. A lid's own tuck and flaps move
+  // in the same stage as the lid: bent first, then carried inside as it closes, the way the board is closed by hand.
   const isLeaf = (i: number) => !(children.get(i) ?? []).some(({ child }) => folded.get(child)?.parent === i);
+  const hingeDir = (f: FoldedPanel): Point => {
+    const dx = f.hinge!.p2[0] - f.hinge!.p1[0], dy = f.hinge!.p2[1] - f.hinge!.p1[1], l = Math.hypot(dx, dy) || 1;
+    return [dx / l, dy / l];
+  };
+  // distance of a point from a fold line, in points
+  const offLine = (f: FoldedPanel, [x, y]: Point) => {
+    const [dx, dy] = hingeDir(f);
+    return Math.abs((x - f.hinge!.p1[0]) * dy - (y - f.hinge!.p1[1]) * dx);
+  };
   for (const i of order.slice(1)) {
     const f = folded.get(i)!, parent = folded.get(f.parent)!;
     const hingeLen = Math.hypot(f.hinge!.p2[0] - f.hinge!.p1[0], f.hinge!.p2[1] - f.hinge!.p1[1]);
     // the first step: the walls round a base (trays, mailers), or the long wall folds of a standing carton
     const strip = parent.stage === 0 && (base !== undefined ? f.parent === root : hingeLen >= maxHinge * 0.9);
-    f.stage = strip ? 0 : parent.stage + (isLeaf(i) ? 1 : 2);
+    if (strip) f.stage = 0;
+    else if (parent.motion === "lid" && isLeaf(i)) {
+      f.stage = parent.stage;
+      const [ax, ay] = hingeDir(f), [bx, by] = hingeDir(parent);
+      if (Math.abs(ax * bx + ay * by) > 0.9) {
+        // a tuck on the far edge of its lid
+        const mid: Point = [(f.hinge!.p1[0] + f.hinge!.p2[0]) / 2, (f.hinge!.p1[1] + f.hinge!.p2[1]) / 2];
+        f.motion = "tuck";
+        f.tuck = { lidDepth: offLine(parent, mid), depth: Math.max(...f.polygon.map((pt) => offLine(f, pt))) };
+      } else f.motion = "lid-flap";
+    } else if (isLeaf(i)) f.stage = parent.stage + 1;
+    else {
+      // A narrow strip carrying a bigger panel is the rim of a double wall (mailer fronts): it folds in with the flaps,
+      // before the lids close over it. Anything else is a lid.
+      const kids = (children.get(i) ?? []).filter(({ child }) => !folded.has(child) || folded.get(child)!.parent === i).map(({ child }) => all[child].area);
+      f.stage = parent.stage + (f.area < 0.5 * Math.max(0, ...kids) ? 1 : 2);
+      f.motion = "lid";
+    }
   }
+  // close up gaps in the numbering (e.g. no flaps between the walls and the lids)
+  const used = [...new Set([...folded.values()].map((f) => f.stage))].sort((a, b) => a - b);
+  for (const f of folded.values()) f.stage = used.indexOf(f.stage);
 
   // Renumber panels 0..n-1 in tree order
   const renumber = new Map(order.map((old, i) => [old, i]));
@@ -176,6 +217,8 @@ interface NodeFrame {
   origin: Vec3;
   /** Translation relative to the parent's origin. */
   translation: Vec3;
+  /** The fold line's direction (rotation axis). */
+  axis: Vec3;
   /** Rotation when fully folded. */
   rotation: Quat;
 }
@@ -184,14 +227,47 @@ function frames(layout: CartonLayout): NodeFrame[] {
   const out: NodeFrame[] = [];
   for (const p of layout.panels) {
     if (p.parent < 0) {
-      out.push({ origin: flat(p.centroid), translation: flat(p.centroid), rotation: IDENTITY_Q });
+      out.push({ origin: flat(p.centroid), translation: flat(p.centroid), axis: [0, 0, 1], rotation: IDENTITY_Q });
       continue;
     }
     const origin = flat(p.hinge!.p1);
     const axis = normalize(sub(flat(p.hinge!.p2), origin));
-    out.push({ origin, translation: sub(origin, out[p.parent].origin), rotation: quatAxisAngle(axis, p.angle) });
+    out.push({ origin, translation: sub(origin, out[p.parent].origin), axis, rotation: quatAxisAngle(axis, p.angle) });
   }
   return out;
+}
+
+/** Share of a lid's stage spent bending its tuck and flaps before the lid starts to close. */
+const PRE_BEND = 0.35;
+const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
+const ease = (x: number) => x * x * (3 - 2 * x);
+
+/** A panel's fold angle (radians, signed) at time `t` seconds into the fold animation. */
+export function foldAngleAt(layout: CartonLayout, panel: number, t: number): number {
+  const p = layout.panels[panel];
+  if (p.parent < 0) return 0;
+  const sign = Math.sign(p.angle), full = Math.abs(p.angle);
+  const s = t - p.stage;
+  switch (p.motion) {
+    case "fold":
+      return sign * full * ease(clamp01(s));
+    case "lid":
+      return sign * full * ease(clamp01((s - PRE_BEND) / (1 - PRE_BEND)));
+    case "lid-flap":
+      return sign * full * ease(clamp01(s / PRE_BEND));
+    case "tuck": {
+      if (s < PRE_BEND) return sign * full * ease(clamp01(s / PRE_BEND));
+      // While the lid closes, bend the tuck a little further so it stays pointing into the box instead of sweeping
+      // through the wall it tucks behind. `left` is how far the lid still has to go; below `critical` the tuck is
+      // held straight down, above it the extra bend eases in from nothing.
+      const lidAngle = Math.abs(layout.panels[p.parent].angle);
+      const left = lidAngle * (1 - ease(clamp01((s - PRE_BEND) / (1 - PRE_BEND))));
+      const { lidDepth, depth } = p.tuck!;
+      const critical = Math.min(lidAngle, Math.asin(Math.min(1, depth / Math.max(lidDepth, 1e-6))) + 0.12);
+      const extra = left <= critical || lidAngle - critical < 1e-6 ? left : (critical * (lidAngle - left)) / (lidAngle - critical);
+      return sign * (full + extra);
+    }
+  }
 }
 
 /**
@@ -204,8 +280,7 @@ export function panelMatrices(layout: CartonLayout, progress = 1, centered = tru
   const out: Mat4[] = [];
   for (let i = 0; i < layout.panels.length; i++) {
     const p = layout.panels[i];
-    const local = Math.min(1, Math.max(0, t - p.stage));
-    const m = fromTR(fr[i].translation, slerpFromIdentity(fr[i].rotation, local));
+    const m = fromTR(fr[i].translation, p.parent < 0 ? IDENTITY_Q : quatAxisAngle(fr[i].axis, foldAngleAt(layout, i, t)));
     out.push(p.parent < 0 ? m : mul(out[p.parent], m));
   }
   const top = fromTR(centered ? centerOffset(layout) : [0, 0, 0], orientation(layout));
@@ -313,14 +388,17 @@ export async function buildCartonGlb(layout: CartonLayout, texture: Buffer, mime
   });
 
   if (options.animation !== false) {
+    // Sample the motion 30 times a second (the moves are eased and tucks bend twice, so two keyframes aren't enough)
     const anim = doc.createAnimation("fold");
+    const steps = Math.round(layout.duration * FPS);
+    const times = Array.from({ length: steps + 1 }, (_, k) => (k / steps) * layout.duration);
+    const input = doc.createAccessor().setType("SCALAR").setArray(new Float32Array(times)).setBuffer(buffer);
     layout.panels.forEach((p, i) => {
       if (p.parent < 0) return;
-      const times = p.stage > 0 ? [0, p.stage, p.stage + 1] : [0, 1];
-      const values = p.stage > 0 ? [...IDENTITY_Q, ...IDENTITY_Q, ...fr[i].rotation] : [...IDENTITY_Q, ...fr[i].rotation];
+      const values = times.flatMap((t) => quatAxisAngle(fr[i].axis, foldAngleAt(layout, i, t)));
       const sampler = doc
         .createAnimationSampler()
-        .setInput(doc.createAccessor().setType("SCALAR").setArray(new Float32Array(times)).setBuffer(buffer))
+        .setInput(input)
         .setOutput(doc.createAccessor().setType("VEC4").setArray(new Float32Array(values)).setBuffer(buffer))
         .setInterpolation("LINEAR");
       anim.addSampler(sampler).addChannel(doc.createAnimationChannel().setTargetNode(nodes[i]).setTargetPath("rotation").setSampler(sampler));

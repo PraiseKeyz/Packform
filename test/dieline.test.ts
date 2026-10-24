@@ -42,6 +42,41 @@ const sizeClose = (actual: Record<string, number>, expected: Record<string, numb
   for (const k of Object.keys(expected)) expect(Math.abs(actual[k] - expected[k]), `${k}: ${actual[k]} vs ${expected[k]}`).toBeLessThanOrEqual(tol);
 };
 const meshNames = (doc: Document) => doc.getRoot().listMeshes().map((m) => m.getName());
+type V3 = [number, number, number];
+const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const minus = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+
+/**
+ * At every moment of the fold, no corner of a tuck pokes out through the wall it ends up behind
+ * (the board can't pass through itself).
+ */
+function expectTucksInside(layout: CartonLayout) {
+  const end = panelMatrices(layout, 1);
+  for (const tuck of layout.panels.filter((p) => p.motion === "tuck")) {
+    const n = panelNormal(end, tuck.id);
+    const at = panelPoint(layout, end, tuck.id, tuck.centroid);
+    // the wall it tucks behind: parallel to it and (almost) in the same plane
+    const wall = layout.panels
+      .filter((p) => p.motion === "fold" && Math.abs(dot(panelNormal(end, p.id), n)) > 0.95)
+      .filter((p) => Math.abs(dot(minus(panelPoint(layout, end, p.id, p.centroid), at), n)) < 0.006)
+      .sort((a, b) => b.area - a.area)[0];
+    expect(wall, "wall behind the tuck").toBeDefined();
+    for (let k = 0; k <= 90; k++) {
+      const m = panelMatrices(layout, k / 90);
+      const [x0, y0, x1, y1] = wall.bbox;
+      const o = panelPoint(layout, m, wall.id, [x0, y0]);
+      const ex = minus(panelPoint(layout, m, wall.id, [x1, y0]), o), ey = minus(panelPoint(layout, m, wall.id, [x0, y1]), o);
+      const wn = panelNormal(m, wall.id);
+      for (const pt of tuck.polygon) {
+        const d = minus(panelPoint(layout, m, tuck.id, pt), o);
+        const a = dot(d, ex) / dot(ex, ex), b = dot(d, ey) / dot(ey, ey);
+        const outside = dot(d, wn);
+        const throughWall = a > 0.02 && a < 0.98 && b > 0.02 && b < 0.98 && outside > 0.0005;
+        expect(throughWall, `tuck ${tuck.id} pokes through wall ${wall.id} at ${Math.round((k / 90) * 100)}%`).toBe(false);
+      }
+    }
+  }
+}
 
 describe.each([
   ["red folds, dark cuts", "carton-red-folds.pdf", false],
@@ -94,15 +129,27 @@ describe.each([
     const anim = doc.getRoot().listAnimations()[0];
     expect(anim.getName()).toBe("fold");
     expect(anim.listChannels()).toHaveLength(12);
-    expect(layout.duration).toBe(4);
-    // walls fold first (the first quarter of the animation); an eighth of the way in they are half folded
+    // walls, then dust flaps, then lids (each lid's tuck moves with it)
+    expect(layout.duration).toBe(3);
+    // walls fold first; half a second in they are half folded
     const wall = layout.panels.find((p) => p.parent === 0 && p.stage === 0)!;
-    expect(panelNormal(panelMatrices(layout, 0.125), wall.id)[2]).toBeCloseTo(Math.cos(Math.PI / 4), 2);
+    expect(panelNormal(panelMatrices(layout, 0.5 / layout.duration), wall.id)[2]).toBeCloseTo(Math.cos(Math.PI / 4), 2);
     // and the lids only start once the walls are done: still in line with the wall they hang from
     const lid = facing(layout, [0, 1, 0]);
-    const quarter = panelMatrices(layout, 0.25);
-    const [a, b] = [panelNormal(quarter, lid.id), panelNormal(quarter, lid.parent)];
-    expect(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).toBeGreaterThan(0.99);
+    const early = panelMatrices(layout, 1.5 / layout.duration);
+    expect(dot(panelNormal(early, lid.id), panelNormal(early, lid.parent))).toBeGreaterThan(0.99);
+  });
+
+  it("bends each tuck before its lid closes, then slides it inside without passing through a wall", () => {
+    const tucks = layout.panels.filter((p) => p.motion === "tuck");
+    expect(tucks).toHaveLength(2);
+    for (const tuck of tucks) {
+      const lid = layout.panels[tuck.parent];
+      // when the lid starts to move, the tuck is already bent to 90°
+      const start = panelMatrices(layout, (lid.stage + 0.36) / layout.duration);
+      expect(Math.abs(dot(panelNormal(start, tuck.id), panelNormal(start, lid.id)))).toBeLessThan(0.05);
+    }
+    expectTucksInside(layout);
   });
 
   it("lies flat at the start of the animation", () => {
@@ -132,6 +179,9 @@ describe("other carton styles", () => {
     // the lid closes on top
     const lid = facing(l, [0, 1, 0]);
     expect(lid.area).toBeCloseTo(l.panels[l.root].area, -2);
+    // the lid's tuck and the inner front wall both slide down inside the front wall
+    expect(l.panels.filter((p) => p.motion === "tuck")).toHaveLength(2);
+    expectTucksInside(l);
   });
 
   it("sleeve: four walls and a glue flap, open at both ends", async () => {
