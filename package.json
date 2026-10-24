@@ -33,7 +33,7 @@
     "node": ">=20"
   },
   "bin": {
-    "packform": "./dist/cli.js"
+    "packform": "dist/cli.js"
   },
   "exports": {
     ".": {
