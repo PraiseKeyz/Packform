@@ -1,6 +1,6 @@
 {
   "name": "packform",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Turn packaging dielines (.ai / .pdf) into true-size, textured 3D models (.glb): cartons that fold themselves up, bottles, jars, cans, cups, blister packs, sachets and pouches. CLI, Node.js API and React viewer.",
   "keywords": [
     "dieline",
